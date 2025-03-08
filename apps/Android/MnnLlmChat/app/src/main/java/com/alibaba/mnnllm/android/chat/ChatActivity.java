@@ -47,6 +47,16 @@ import java.util.Locale;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
+import ddlx.api.NetworkUtils;
+import ddlx.api.ApiManager;
+
+import android.app.AlertDialog;
+import android.view.LayoutInflater;
+import android.widget.Switch;
+import android.widget.TextView;
+import android.content.SharedPreferences;
+import androidx.preference.PreferenceManager;
+
 public class ChatActivity extends AppCompatActivity {
 
     private RecyclerView recyclerView;
@@ -111,6 +121,13 @@ public class ChatActivity extends AppCompatActivity {
         setupVoiceRecordingModule();
         setupAttachmentPickerModule();
         smoothScrollToBottom();
+        // 显示API服务地址
+        String localIp = NetworkUtils.getLocalIpAddress();
+        if (localIp != null) {
+            String apiEndpoint = "http://" + localIp + ":8080";
+            Toast.makeText(this, "API endpoint: " + apiEndpoint, Toast.LENGTH_LONG).show();
+        }
+
     }
 
     private void handleSendClick() {
@@ -147,6 +164,12 @@ public class ChatActivity extends AppCompatActivity {
         chatExecutor.submit(() -> {
             Log.d(TAG, "chatSession loading");
             setIsLoading(true);
+
+            // 确保在加载模型前初始化 ApiManager
+            if (ApiManager.getInstance().getContext() == null) {
+                ApiManager.getInstance().init(getApplicationContext());
+            }
+
             chatSession.load();
             setIsLoading(false);
             Log.d(TAG, "chatSession loaded");
@@ -347,6 +370,12 @@ public class ChatActivity extends AppCompatActivity {
         menu.findItem(R.id.show_performance_metrics)
                 .setChecked(PreferenceUtils.getBoolean(this, PreferenceUtils.KEY_SHOW_PERFORMACE_METRICS, true));
         menu.findItem(R.id.menu_item_use_mmap).setChecked(ModelPreferences.getBoolean(this, modelId, ModelPreferences.KEY_USE_MMAP, true));
+
+        // 添加 API 设置菜单项
+        menu.add(Menu.NONE, R.id.nav_api_settings, Menu.NONE, R.string.api_settings)
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+
+
         return true;
     }
 
@@ -374,6 +403,12 @@ public class ChatActivity extends AppCompatActivity {
             ModelPreferences.setBoolean(this, modelId, ModelPreferences.KEY_USE_MMAP, item.isChecked());
             recreate();
         }
+        else if (item.getItemId() == R.id.nav_api_settings) {
+            // 打开 API 设置对话框
+            showApiSettingsDialog();
+        }
+
+
         return super.onOptionsItemSelected(item);
     }
 
@@ -591,4 +626,88 @@ public class ChatActivity extends AppCompatActivity {
     public String getSessionDebugInfo() {
         return chatSession.getDebugInfo();
     }
+    private void showApiSettingsDialog() {
+        // 创建一个对话框来设置 API 端口
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle(R.string.api_service_settings);
+
+        // 设置布局
+        LayoutInflater inflater = getLayoutInflater();
+        View dialogView = inflater.inflate(R.layout.fragment_api_settings, null);
+        builder.setView(dialogView);
+
+        Switch apiServiceSwitch = dialogView.findViewById(R.id.switch_api_service);
+        EditText portEditText = dialogView.findViewById(R.id.edit_port);
+        TextView statusTextView = dialogView.findViewById(R.id.text_api_status);
+        // 获取显示 API 基础 URL 的 TextView
+        TextView baseUrlTextView = dialogView.findViewById(R.id.text_api_base_url);
+
+        // 获取保存的端口号，默认8080
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        int savedPort = prefs.getInt("api_port", 8080);
+        portEditText.setText(String.valueOf(savedPort));
+
+        // 获取服务状态
+        boolean isServiceRunning = ApiManager.getInstance().isServiceBound();
+        apiServiceSwitch.setChecked(isServiceRunning);
+
+        // 显示 API 基础 URL
+        String localIp = NetworkUtils.getLocalIpAddress();
+        if (localIp != null) {
+            String apiEndpoint = "http://" + localIp + ":" + savedPort+ "/v1/chat/completions";
+            baseUrlTextView.setText(getString(R.string.api_base_url) + " " + apiEndpoint);
+        } else {
+            baseUrlTextView.setText(getString(R.string.api_base_url) + " " + getString(R.string.invalid_ip));
+        }
+
+        apiServiceSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (isChecked) {
+                ApiManager.getInstance().startApiService();
+            } else {
+                ApiManager.getInstance().stopApiService();
+            }
+        });
+
+        portEditText.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                try {
+                    int port = Integer.parseInt(s.toString());
+                    if (port >= 1024 && port <= 65535) {
+                        prefs.edit().putInt("api_port", port).apply();
+                        ApiManager.getInstance().updatePort(port);
+                        Toast.makeText(ChatActivity.this, getString(R.string.port_changed, port),
+                                Toast.LENGTH_SHORT).show();
+                    } else {
+                        Toast.makeText(ChatActivity.this,
+                                R.string.invalid_port,
+                                Toast.LENGTH_SHORT).show();
+                    }
+                } catch (NumberFormatException e) {
+                    Toast.makeText(ChatActivity.this,
+                            R.string.invalid_port,
+                            Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
+
+        builder.setPositiveButton(R.string.save, (dialog, which) -> {
+            // 保存设置
+        });
+
+        builder.setNegativeButton(R.string.cancel, (dialog, which) -> {
+            // 取消
+        });
+
+        AlertDialog dialog = builder.create();
+        dialog.show();
+    }
+
+
 }

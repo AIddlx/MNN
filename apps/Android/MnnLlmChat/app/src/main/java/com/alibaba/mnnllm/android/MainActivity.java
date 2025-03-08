@@ -20,6 +20,8 @@ import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.fragment.app.Fragment;
 
 import com.alibaba.mls.api.download.ModelDownloadManager;
+import ddlx.api.ApiManager;
+import ddlx.api.ApiSettingsFragment;
 import com.alibaba.mnnllm.android.chat.ChatActivity;
 import com.alibaba.mnnllm.android.history.ChatHistoryFragment;
 import com.alibaba.mnnllm.android.modelist.ModelListFragment;
@@ -50,6 +52,24 @@ public class MainActivity extends AppCompatActivity {
         drawerLayout = findViewById(R.id.drawer_layout);
         updateChecker = new UpdateChecker(this);
         updateChecker.checkForUpdates(this, false);
+
+
+        // 初始化 ApiManager
+        ApiManager.getInstance().init(getApplicationContext());
+
+        NavigationView navigationView = findViewById(R.id.nav_view);
+        navigationView.setNavigationItemSelectedListener(item -> {
+            int id = item.getItemId();
+            if (id == R.id.nav_api_settings) {
+                getSupportFragmentManager().beginTransaction()
+                        .replace(R.id.main_fragment_container, new ApiSettingsFragment())
+                        .addToBackStack(null)
+                        .commit();
+                drawerLayout.closeDrawer(GravityCompat.START);
+                return true;
+            }
+            return false;
+        });
 
         // Set up ActionBar toggle
         toggle = new ActionBarDrawerToggle(

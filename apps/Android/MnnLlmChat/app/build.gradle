@@ -29,12 +29,12 @@ android {
         }
 
         compileOptions {
-            sourceCompatibility JavaVersion.VERSION_1_8
-            targetCompatibility JavaVersion.VERSION_1_8
+            sourceCompatibility JavaVersion.VERSION_17
+            targetCompatibility JavaVersion.VERSION_17
         }
 
         kotlinOptions {
-            jvmTarget = "1.8"
+            jvmTarget = "17"
         }
 
         ndk {
@@ -50,8 +50,8 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
     externalNativeBuild {
         cmake {
@@ -88,4 +88,6 @@ dependencies {
     implementation 'ru.noties:jlatexmath-android:0.2.0'
     implementation 'ru.noties:jlatexmath-android-font-cyrillic:0.2.0'
     implementation 'ru.noties:jlatexmath-android-font-greek:0.2.0'
+    implementation 'org.nanohttpd:nanohttpd:2.3.1'
+    implementation "androidx.preference:preference:1.2.1"
 }

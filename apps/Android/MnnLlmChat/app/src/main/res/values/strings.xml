@@ -35,7 +35,14 @@
     <string name="select_audio">Audio(wav)</string>
     <string name="show_performance_metrics">Show Performance Metrics</string>
 
-<!--    <string name="app_name">DrawerLayoutDemo</string>-->
+    <string name="api_base_url">API Base URL:</string>
+    <string name="invalid_ip">Invalid IP Address</string>
+    <string name="api_port">API Port</string>
+    <string name="save">SAVE</string>
+    <string name="cancel">Cancel</string>
+
+
+    <!--    <string name="app_name">DrawerLayoutDemo</string>-->
     <string name="nav_open">Open navigation drawer</string>
     <string name="nav_close">Close navigation drawer</string>
     <string name="models">Models</string>

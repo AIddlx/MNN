@@ -8,4 +8,8 @@
         android:id="@+id/nav_history"
         android:title="@string/history"
         android:enabled="true"/>
+    <item
+        android:id="@+id/nav_api_settings"
+        android:icon="@android:drawable/ic_menu_manage"
+        android:title="@string/api_settings" />
 </menu>
