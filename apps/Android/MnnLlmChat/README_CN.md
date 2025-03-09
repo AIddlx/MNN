@@ -30,6 +30,9 @@
 您可以通过 [Releases](#releases) 下载应用，或者 自行构建(#开发)。
 + 安装应用后，您可以浏览所有支持的模型，下载所需模型，并直接在应用内与模型交互。
 + 此外，您可以通过侧边栏访问聊天历史，轻松查看和管理之前的对话记录。
++ 
++ API使用时模型名称设置为mnn-local， baseUrl可在模型对话界面的API Setting 内复制和开关，网络接口自动切到换WiFi、流量、本地
++ api暂时仅支持文本
 
  !!!warning!!!  此版本目前仅在 OnePlus 13 和 小米 14 Ultra 上进行了测试。由于大型语言模型（LLM）对设备性能要求较高，许多低配置设备可能会遇到以下问题：推理速度缓慢、应用不稳定甚至无法运行。对于其他设备的稳定性无法保证。如果您在使用过程中遇到问题，请随时提交问题以获取帮助。
 
@@ -43,6 +46,7 @@
   ```shell
   cd project/android
   mkdir build_64
+  cd build_64
   ../build_64.sh "-DMNN_LOW_MEMORY=true -DMNN_CPU_WEIGHT_DEQUANT_GEMM=true -DMNN_BUILD_LLM=true -DMNN_SUPPORT_TRANSFORMER_FUSE=true -DMNN_ARM82=true -DMNN_USE_LOGCAT=true -DMNN_OPENCL=true -DLLM_SUPPORT_VISION=true -DMNN_BUILD_OPENCV=true -DMNN_IMGCODECS=true -DLLM_SUPPORT_AUDIO=true -DMNN_BUILD_AUDIO=true -DMNN_BUILD_DIFFUSION=ON -DMNN_SEP_BUILD=ON"
   ```
 + 复制到 LLM Android 应用项目：
