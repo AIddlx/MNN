@@ -393,14 +393,7 @@ public class ChatActivity extends AppCompatActivity {
         menu.findItem(R.id.show_performance_metrics)
                 .setChecked(PreferenceUtils.getBoolean(this, PreferenceUtils.KEY_SHOW_PERFORMACE_METRICS, true));
         menu.findItem(R.id.menu_item_use_mmap).setChecked(ModelPreferences.getBoolean(this, modelId, ModelPreferences.KEY_USE_MMAP, true));
-<<<<<<< HEAD
 
-        // 添加 API 设置菜单项
-        menu.add(Menu.NONE, R.id.nav_api_settings, Menu.NONE, R.string.api_settings)
-                .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-  
-
-=======
         menu.findItem(R.id.menu_item_backend).setChecked(ModelPreferences.getBoolean(this, modelId, ModelPreferences.KEY_BACKEND, false));        
         MenuItem samplerSpinnerItem = menu.findItem(R.id.menu_item_sampler_spinner);
         Spinner samplerSpinner = Objects.requireNonNull(samplerSpinnerItem.getActionView()).findViewById(R.id.sampler_spinner);
@@ -421,7 +414,6 @@ public class ChatActivity extends AppCompatActivity {
             @Override
             public void onNothingSelected(AdapterView<?> parent) {}
         });
->>>>>>> d332d424a957f9a4765e550de64977a1fb9ff8e5
         return true;
     }
 
