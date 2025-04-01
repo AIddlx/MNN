@@ -15,12 +15,14 @@ import ExyteMediaPicker
 final class LLMChatViewModel: ObservableObject {
     
     private var llm: LLMInferenceEngineWrapper?
-//    private var diffusion: DiffusionSession?
+    private var diffusion: DiffusionSession?
     private let llmState = LLMState()
     
     @Published var messages: [Message] = []
     @Published var isModelLoaded = false
     @Published var isProcessing: Bool = false
+    
+    @Published var useMmap: Bool = false
     
     var chatInputUnavilable: Bool {
         if isModelLoaded == false || isProcessing == true {
@@ -52,8 +54,11 @@ final class LLMChatViewModel: ObservableObject {
     var history: ChatHistory?
     private var historyId: String
     
-    private lazy var configManager = ModelConfigManager(modelPath: modelInfo.localPath)
-    @Published var useMmap: Bool = false
+    let modelConfigManager: ModelConfigManager
+    
+    var isDiffusionModel: Bool {
+        return modelInfo.name.lowercased().contains("diffusion")
+    }
     
     init(modelInfo: ModelInfo, history: ChatHistory? = nil) {
         self.modelInfo = modelInfo
@@ -62,8 +67,9 @@ final class LLMChatViewModel: ObservableObject {
         let messages = self.history?.messages
         self.interactor = LLMChatInteractor(modelInfo: modelInfo, historyMessages: messages)
         
-        // Initialize useMmap from config
-        self.useMmap = configManager.readUseMmap()
+        self.modelConfigManager = ModelConfigManager(modelPath: modelInfo.localPath)
+        
+        self.useMmap = self.modelConfigManager.readUseMmap()
     }
     
     deinit {
@@ -82,34 +88,38 @@ final class LLMChatViewModel: ObservableObject {
             ), userType: .system)
         }
 
-        /* TODO: support diffusion
-        diffusion = DiffusionSession(modelPath: modelPath, completion: { [weak self] success in
-            Task { @MainActor in
-                print("Diffusion Model \(success)")
-                self?.isModelLoaded = success
-            }
-        })
-         */
-        llm = LLMInferenceEngineWrapper(modelPath: modelPath) { [weak self] success in
-            Task { @MainActor in
-                self?.isModelLoaded = success
-                
-                let modelLoadSuccessText = NSLocalizedString("ModelLoadingSuccessText", comment: "")
-                let modelLoadFailText = NSLocalizedString("ModelLoadingFailText", comment: "")
-                let loadResult = success ? modelLoadSuccessText : modelLoadFailText
-                
-                self?.send(draft: DraftMessage(
-                    text: loadResult,
-                    thinkText: "",
-                    medias: [],
-                    recording: nil,
-                    replyMessage: nil,
-                    createdAt: Date()
-                ), userType: .system)
-                
-                self?.processHistoryMessages()
+        if modelInfo.name.lowercased().contains("diffusion") {
+            diffusion = DiffusionSession(modelPath: modelPath, completion: { [weak self] success in
+                Task { @MainActor in
+                    print("Diffusion Model \(success)")
+                    self?.isModelLoaded = success
+                    self?.sendModelLoadStatus(success: success)
+                }
+            })
+        } else {
+            llm = LLMInferenceEngineWrapper(modelPath: modelPath) { [weak self] success in
+                Task { @MainActor in
+                    self?.isModelLoaded = success
+                    self?.sendModelLoadStatus(success: success)
+                    self?.processHistoryMessages()
+                }
             }
         }
+    }
+    
+    private func sendModelLoadStatus(success: Bool) {
+        let modelLoadSuccessText = NSLocalizedString("ModelLoadingSuccessText", comment: "")
+        let modelLoadFailText = NSLocalizedString("ModelLoadingFailText", comment: "")
+        let loadResult = success ? modelLoadSuccessText : modelLoadFailText
+
+        self.send(draft: DraftMessage(
+            text: loadResult,
+            thinkText: "",
+            medias: [],
+            recording: nil,
+            replyMessage: nil,
+            createdAt: Date()
+        ), userType: .system)
     }
     
     private func processHistoryMessages() {
@@ -140,10 +150,11 @@ final class LLMChatViewModel: ObservableObject {
     func sendToLLM(draft: DraftMessage) {
         self.send(draft: draft, userType: .user)
         if isModelLoaded {
-            /* TODO: support diffusion
-             self.getDiffusionResponse(draft: draft)
-             */
-            self.getLLMRespsonse(draft: draft)
+            if modelInfo.name.lowercased().contains("diffusion") {
+                self.getDiffusionResponse(draft: draft)
+            } else {
+                self.getLLMRespsonse(draft: draft)
+            }
         }
     }
     
@@ -151,13 +162,38 @@ final class LLMChatViewModel: ObservableObject {
         interactor.send(draftMessage: draft, userType: userType)
     }
     
-//    func getDiffusionResponse(draft: DraftMessage) {
-//        Task {
-//            diffusion?.run(withPrompt: "one cat", imagePath: "dog.jpg", progressCallback: { progress in
-//                print(progress)
-//            })
-//        }
-//    }
+    func getDiffusionResponse(draft: DraftMessage) {
+        
+        Task {
+            
+            let tempDir = FileManager.default.temporaryDirectory
+            let imageName = UUID().uuidString + ".jpg"
+            let tempImagePath = tempDir.appendingPathComponent(imageName).path
+
+            var lastProcess:Int32 = 0
+            
+            self.send(draft: DraftMessage(text: "Start Generating Image...", thinkText: "", medias: [], recording: nil, replyMessage: nil, createdAt: Date()), userType: .assistant)
+            
+            // 获取用户设置的迭代次数和种子值
+            let userIterations = self.modelConfigManager.readIterations()
+            let userSeed = self.modelConfigManager.readSeed()
+            
+            // 使用用户设置的参数调用新方法
+            diffusion?.run(withPrompt: draft.text, 
+                          imagePath: tempImagePath, 
+                         iterations: Int32(userIterations), 
+                               seed: Int32(userSeed),
+                    progressCallback: {progress in
+                if progress == 100 {
+                    self.send(draft: DraftMessage(text: "Image generated successfully!", thinkText: "", medias: [], recording: nil, replyMessage: nil, createdAt: Date()), userType: .system)
+                    self.interactor.sendImage(imageURL: URL(string: "file://" + tempImagePath)!)
+                } else if ((progress - lastProcess) > 20) {
+                    lastProcess = progress
+                    self.send(draft: DraftMessage(text: "Generating Image \(progress)%", thinkText: "", medias: [], recording: nil, replyMessage: nil, createdAt: Date()), userType: .system)
+                }
+            })
+        }
+    }
     
     func getLLMRespsonse(draft: DraftMessage) {
         Task {
@@ -213,6 +249,12 @@ final class LLMChatViewModel: ObservableObject {
                     }
                 }
             }
+        }
+    }
+    
+    func setModelConfig() {
+        if let configStr = self.modelConfigManager.readConfigAsJSONString(), let llm = self.llm {
+            llm.setConfigWithJSONString(configStr)
         }
     }
     
@@ -319,10 +361,5 @@ final class LLMChatViewModel: ObservableObject {
         } catch {
             print("Error accessing tmp directory: \(error.localizedDescription)")
         }
-    }
-    
-    func updateUseMmap(_ value: Bool) {
-        useMmap = value
-        configManager.updateUseMmap(value)
     }
 }

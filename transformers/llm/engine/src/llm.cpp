@@ -14,6 +14,7 @@
 
 #include <MNN/AutoTime.hpp>
 #include <MNN/expr/ExecutorScope.hpp>
+#include "core/FileLoader.hpp"
 #include "cpp/ExprDebug.hpp"
 #include "llm/llm.hpp"
 #include "llmconfig.hpp"
@@ -60,8 +61,8 @@ typedef void (*DequantFunction)(const uint8_t*, float*, float, float, int);
 static void q41_dequant_ref(const uint8_t* src, float* dst, float scale, float zero, int size) {
     for (int i = 0; i < size / 2; i++) {
         int x          = src[i];
-        int x1         = x / 16 - 8;
-        int x2         = x % 16 - 8;
+        int x1         = x / 16;
+        int x2         = x % 16;
         float w1       = x1 * scale + zero;
         float w2       = x2 * scale + zero;
         dst[2 * i]     = w1;
@@ -71,7 +72,7 @@ static void q41_dequant_ref(const uint8_t* src, float* dst, float scale, float z
 
 static void q81_dequant_ref(const uint8_t* src, float* dst, float scale, float zero, int size) {
     for (int i = 0; i < size; i++) {
-        dst[i] = (src[i] - 128) * scale + zero;
+        dst[i] = (src[i]) * scale + zero;
     }
 }
 
@@ -85,37 +86,54 @@ private:
     void seek_read(uint8_t* dst, size_t size, size_t offset);
     std::unique_ptr<uint8_t[]> mAlpha  = nullptr;
     std::unique_ptr<uint8_t[]> mWeight = nullptr;
-    std::unique_ptr<FILE, decltype(&fclose)> mFile;
+    std::unique_ptr<FileLoader> mFile;
     DequantFunction mDequantFunc;
     int mHiddenSize, mTokenSize;
-    int64_t mOffset, mBlockNum, mQuantBlock, mQuantBit;
+    float mOffset = 0.0f;
+    bool mAsymc = true;
+    int64_t mWeightOffset, mBlockNum, mQuantBlock, mQuantBit;
 };
 
 void DiskEmbedding::seek_read(uint8_t* dst, size_t size, size_t offset) {
-    fseek(mFile.get(), offset, SEEK_SET);
-    size_t bytes_read = fread(dst, 1, size, mFile.get());
-    (void)bytes_read;
+    mFile->offset(offset);
+    mFile->read((char*)dst, size);
 }
 
-DiskEmbedding::DiskEmbedding(const std::shared_ptr<LlmConfig>& config) : mFile(nullptr, &fclose) {
+DiskEmbedding::DiskEmbedding(const std::shared_ptr<LlmConfig>& config) {
     auto tie_embeddings = config->tie_embeddings();
     mHiddenSize        = config->hidden_size();
     if (tie_embeddings.size() == 5) {
-        mOffset           = tie_embeddings[0];
+        mWeightOffset     = tie_embeddings[0];
         mQuantBit         = tie_embeddings[3];
         mQuantBlock       = tie_embeddings[4];
         mBlockNum         = mHiddenSize / mQuantBlock;
         mTokenSize = mHiddenSize * mQuantBit / 8;
-        mFile.reset(fopen(config->llm_weight().c_str(), "rb"));
+        mFile.reset(new FileLoader(config->llm_weight().c_str(), true));
         // TODO: optimize dequant function
         mDequantFunc      = mQuantBit == 8 ? q81_dequant_ref : q41_dequant_ref;
         auto a_offset   = tie_embeddings[1];
         auto alpha_size = tie_embeddings[2];
+        size_t oc = (a_offset - mWeightOffset) / mHiddenSize * (8 / mQuantBit);
+        
         mAlpha.reset(new uint8_t[alpha_size]);
         seek_read(mAlpha.get(), alpha_size, a_offset);
+        mOffset = -(1 << (mQuantBit-1));
+        if (alpha_size == sizeof(float) * mBlockNum * oc) {
+            mAsymc = false;
+        } else {
+            MNN_ASSERT(alpha_size == 2 * sizeof(float) * mBlockNum * oc);
+            mAsymc = true;
+            auto alphaPtr = (float*)mAlpha.get();
+            for (int i=0; i<mBlockNum * oc; ++i) {
+                alphaPtr[2*i] = alphaPtr[2*i] + alphaPtr[2*i+1] * mOffset;
+            }
+        }
     } else {
         mTokenSize = mHiddenSize * sizeof(int16_t);
-        mFile.reset(fopen(config->embedding_file().c_str(), "rb"));
+        mFile.reset(new FileLoader(config->embedding_file().c_str(), true));
+    }
+    if(mFile == nullptr || (!mFile->valid())) {
+        MNN_ERROR("Failed to open embedding file!\n");
     }
     mWeight.reset(new uint8_t[mTokenSize]);
 }
@@ -123,17 +141,33 @@ DiskEmbedding::DiskEmbedding(const std::shared_ptr<LlmConfig>& config) : mFile(n
 void DiskEmbedding::embedding(const std::vector<int>& input_ids, float* dst) {
     if (mAlpha.get()) {
         // quant
-        for (size_t i = 0; i < input_ids.size(); i++) {
-            int token = input_ids[i];
-            seek_read(mWeight.get(), mTokenSize, mOffset + token * mTokenSize);
-            auto dptr      = dst + i * mHiddenSize;
-            auto alpha_ptr = reinterpret_cast<float*>(mAlpha.get()) + token * mBlockNum * 2;
-            for (int n = 0; n < mBlockNum; n++) {
-                auto dst_ptr     = dptr + n * mQuantBlock;
-                uint8_t* src_ptr = mWeight.get() + n * (mQuantBlock * mQuantBit / 8);
-                float zero       = (alpha_ptr + n * 2)[0];
-                float scale      = (alpha_ptr + n * 2)[1];
-                mDequantFunc(src_ptr, dst_ptr, scale, zero, mQuantBlock);
+        if (mAsymc) {
+            for (size_t i = 0; i < input_ids.size(); i++) {
+                int token = input_ids[i];
+                seek_read(mWeight.get(), mTokenSize, mWeightOffset + token * mTokenSize);
+                auto dptr      = dst + i * mHiddenSize;
+                auto alpha_ptr = reinterpret_cast<float*>(mAlpha.get()) + token * mBlockNum * 2;
+                for (int n = 0; n < mBlockNum; n++) {
+                    auto dst_ptr     = dptr + n * mQuantBlock;
+                    uint8_t* src_ptr = mWeight.get() + n * (mQuantBlock * mQuantBit / 8);
+                    float zero       = (alpha_ptr + n * 2)[0];
+                    float scale      = (alpha_ptr + n * 2)[1];
+                    mDequantFunc(src_ptr, dst_ptr, scale, zero, mQuantBlock);
+                }
+            }
+        } else {
+            for (size_t i = 0; i < input_ids.size(); i++) {
+                int token = input_ids[i];
+                seek_read(mWeight.get(), mTokenSize, mWeightOffset + token * mTokenSize);
+                auto dptr      = dst + i * mHiddenSize;
+                auto alpha_ptr = reinterpret_cast<float*>(mAlpha.get()) + token * mBlockNum;
+                for (int n = 0; n < mBlockNum; n++) {
+                    auto dst_ptr     = dptr + n * mQuantBlock;
+                    uint8_t* src_ptr = mWeight.get() + n * (mQuantBlock * mQuantBit / 8);
+                    float scale      = (alpha_ptr + n)[0];
+                    float zero       = mOffset * scale;
+                    mDequantFunc(src_ptr, dst_ptr, scale, zero, mQuantBlock);
+                }
             }
         }
     } else {
@@ -260,6 +294,9 @@ void Llm::initRuntime() {
     config.backendConfig = &cpuBackendConfig;
 
     mRuntimeManager.reset(Executor::RuntimeManager::createRuntimeManager(config));
+    // Use 4 thread to load llm
+    mRuntimeManager->setHint(MNN::Interpreter::INIT_THREAD_NUMBER, 4);
+
     mRuntimeManager->setHint(MNN::Interpreter::MEM_ALLOCATOR_TYPE, 0);
     mRuntimeManager->setHint(MNN::Interpreter::QKV_QUANT_OPTIONS, mConfig->quant_qkv());
     mRuntimeManager->setHint(MNN::Interpreter::KVCACHE_SIZE_LIMIT, mConfig->kvcache_limit());
@@ -390,16 +427,16 @@ void Llm::tuning(TuneType type, std::vector<int> candidates) {
         MNN_ERROR("tuning type not supported\n");
         return;
     }
-    if (mConfig->backend_type() != "metal") {
+    // FIXME: Currently OpenCL Don't support KVMeta
+    if (mConfig->backend_type() == "opencl") {
         return;
     }
-
     mCurrentModules     = mDecodeModules;
     int64_t min_time     = INT64_MAX;
     int prefer_candidate = 10;
     for (auto& candidate : candidates) {
         mRuntimeManager->setHint(MNN::Interpreter::OP_ENCODER_NUMBER_FOR_COMMIT, candidate);
-        auto st     = std::chrono::system_clock::now();
+        Timer _t;
         auto logits = forward({0});
         if (nullptr == logits.get()) {
             return;
@@ -408,8 +445,7 @@ void Llm::tuning(TuneType type, std::vector<int> candidates) {
             return;
         }
         auto token   = sample(logits);
-        auto et      = std::chrono::system_clock::now();
-        int64_t time = std::chrono::duration_cast<std::chrono::microseconds>(et - st).count();
+        auto time = _t.durationInUs();
         if (time < min_time) {
             prefer_candidate = candidate;
             min_time         = time;
@@ -504,8 +540,6 @@ void Llm::generate_init(std::ostream* os, const char* end_with) {
         mContext->generate_str.clear();
     }
     mContext->gen_seq_len = 0;
-    mContext->vision_us   = 0;
-    mContext->audio_us    = 0;
     mContext->prefill_us  = 0;
     mContext->decode_us   = 0;
     mContext->current_token = 0;
@@ -549,7 +583,7 @@ bool Llm::stoped() {
 void Llm::generate(int max_token) {
     int len = 0;
     while (len < max_token) {
-        auto st = std::chrono::system_clock::now();
+        MNN::Timer _t;
         auto decodeStr = tokenizer_decode(mContext->current_token);
         mContext->generate_str += decodeStr;
         if (nullptr != mContext->os) {
@@ -567,8 +601,7 @@ void Llm::generate(int max_token) {
             break;
         }
         mContext->current_token = sample(logits);
-        auto et = std::chrono::system_clock::now();
-        mContext->decode_us += std::chrono::duration_cast<std::chrono::microseconds>(et - st).count();
+        mContext->decode_us += _t.durationInUs();
         if (is_stop(mContext->current_token) && nullptr != mContext->os) {
             *mContext->os << mContext->end_with << std::flush;
             break;
@@ -582,17 +615,18 @@ std::vector<int> Llm::generate(const std::vector<int>& input_ids, int max_tokens
     }
     mContext->prompt_len = static_cast<int>(input_ids.size());
     mContext->history_tokens.insert(mContext->history_tokens.end(), input_ids.begin(), input_ids.end()); // push to history_ids_
-    auto st          = std::chrono::system_clock::now();
+    Timer _t;
     mCurrentModules = mPrefillModules;
     auto logits      = forward(input_ids);
     if (nullptr == logits.get()) {
         return {};
     }
+    mContext->prefill_us = _t.durationInUs();
+    _t.reset();
     mContext->current_token = sample(logits);
+    mContext->sample_us += _t.durationInUs();
     logits = nullptr;
-    auto et = std::chrono::system_clock::now();
     mCurrentModules = mDecodeModules;
-    mContext->prefill_us = std::chrono::duration_cast<std::chrono::microseconds>(et - st).count();
     generate(max_tokens - 1);
 
     return mContext->output_tokens;
@@ -602,16 +636,19 @@ std::vector<int> Llm::tokenizer_encode(const std::string& user_content) {
     return mTokenizer->encode(user_content);
 }
 
-void Llm::response(const std::string& user_content, std::ostream* os, const char* end_with, int max_new_tokens) {
+void Llm::response(const std::vector<int>& input_ids, std::ostream* os, const char* end_with, int max_new_tokens) {
     if (!end_with) { end_with = "\n"; }
     generate_init(os, end_with);
+    generate(input_ids, max_new_tokens);
+}
+
+void Llm::response(const std::string& user_content, std::ostream* os, const char* end_with, int max_new_tokens) {
     auto prompt = user_content;
     if (mConfig->use_template()) {
         prompt = mPrompt->applyTemplate(user_content);
     }
-    // std::cout << prompt << std::endl;
     std::vector<int> input_ids = tokenizer_encode(prompt);
-    generate(input_ids, max_new_tokens);
+    response(input_ids, os, end_with, max_new_tokens);
 }
 
 void Llm::response(const ChatMessages& chat_prompts, std::ostream* os, const char* end_with, int max_new_tokens) {
@@ -619,8 +656,8 @@ void Llm::response(const ChatMessages& chat_prompts, std::ostream* os, const cha
         return;
     }
     auto prompt = mPrompt->applyTemplate(chat_prompts);
-    // std::cout << prompt << std::endl;
-    response(prompt, os, end_with, max_new_tokens);
+    std::vector<int> input_ids = tokenizer_encode(prompt);
+    response(input_ids, os, end_with, max_new_tokens);
 }
 
 Llm::Llm(std::shared_ptr<LlmConfig> config) : mConfig(config) {
@@ -808,6 +845,7 @@ void Mllm::load() {
         }
         config.backendConfig = &cpuBackendConfig;
         mProcessorRuntimeManager.reset(Executor::RuntimeManager::createRuntimeManager(config));
+        mProcessorRuntimeManager->setHint(Interpreter::INIT_THREAD_NUMBER, 4);
         mProcessorRuntimeManager->setHint(MNN::Interpreter::MEM_ALLOCATOR_TYPE, 0);
         mProcessorRuntimeManager->setHint(MNN::Interpreter::QKV_QUANT_OPTIONS, mConfig->quant_qkv());
         mProcessorRuntimeManager->setHint(MNN::Interpreter::KVCACHE_SIZE_LIMIT, mConfig->kvcache_limit());
@@ -839,7 +877,7 @@ std::vector<int> Mllm::vision_process(const std::string& file) {
         MNN_PRINT("Mllm Can't open image: %s\n", file.c_str());
         return std::vector<int>(0);
     }
-    auto st    = std::chrono::system_clock::now();
+    Timer _t;
     VARP image_embedding;
 
     if (mMulModule->getInfo()->inputNames[0] == "patches") {
@@ -916,8 +954,7 @@ std::vector<int> Mllm::vision_process(const std::string& file) {
         image           = Express::_Convert(image, NC4HW4);
         image_embedding = mMulModule->forward(image);
     }
-    auto et    = std::chrono::system_clock::now();
-    mContext->vision_us = std::chrono::duration_cast<std::chrono::microseconds>(et - st).count();
+    mContext->vision_us = _t.durationInUs();
     mMulEmbeddings.push_back(image_embedding);
     int visual_len = image_embedding->getInfo()->dim[0];
     std::vector<int> img_ids(visual_len, mVisionPad);
@@ -941,12 +978,11 @@ std::vector<int> Mllm::audio_process(const std::string& file) {
     // int sample_rate      = load_res.second;
     int wav_len          = waveform->getInfo()->dim[0];
     int hop_length       = 160;
-    auto st              = std::chrono::system_clock::now();
+    Timer _t;
     auto input_features  = MNN::AUDIO::whisper_fbank(waveform);
     auto audio_embedding = mMulModule->forward(input_features);
     audio_embedding = _Permute(audio_embedding, {1, 0, 2});
-    auto et         = std::chrono::system_clock::now();
-    mContext->audio_us       = std::chrono::duration_cast<std::chrono::microseconds>(et - st).count();
+    mContext->audio_us = _t.durationInUs();
     mMulEmbeddings.push_back(audio_embedding);
     int embed_len = audio_embedding->getInfo()->dim[0];
     std::vector<int> audio_ids(embed_len, mAudioPad);

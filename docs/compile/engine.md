@@ -31,7 +31,13 @@ cd /path/to/MNN
 mkdir build && cd build && cmake .. -DCMAKE_OSX_ARCHITECTURES=arm64 && make -j8
 ```
 
-## Windows(非ARM架构)
+## Windows(Visual-Studio)
+- 编译环境
+  建议使用`Windows Terminal`，选择`VS`环境的Tab后进行编译， 如下：
+  ![image.png](../_static/images/compile/vs_shell.png)
+  如不使用`Windows Terminal`，可参考如下：
+    - 64位编译：在设置中找到vcvars64.bat（适用于 VS 2017 的 x64 本机工具命令提示）并单击，打开VS编译x64架构程序的虚拟环境
+    - 32位编译：在设置中找到vcvarsamd64_x86.bat（VS 2017的 x64_x86 交叉工具命令提示符）并单击，打开VS交叉编译x86架构程序的虚拟环境
 - 环境要求
   - Microsoft Visual Studio >= 2017
   - cmake >= 3.13
@@ -39,8 +45,6 @@ mkdir build && cd build && cmake .. -DCMAKE_OSX_ARCHITECTURES=arm64 && make -j8
 - 相关编译选项
   - 同`Linux/MacOS`
 - 具体步骤
-  - 64位编译：在设置中找到vcvars64.bat（适用于 VS 2017 的 x64 本机工具命令提示）并单击，打开VS编译x64架构程序的虚拟环境
-  - 32位编译：在设置中找到vcvarsamd64_x86.bat（VS 2017的 x64_x86 交叉工具命令提示符）并单击，打开VS交叉编译x86架构程序的虚拟环境 
   - 在虚拟环境中执行如下编译命令：
      ```bash
      cd /path/to/MNN
@@ -52,21 +56,34 @@ mkdir build && cd build && cmake .. -DCMAKE_OSX_ARCHITECTURES=arm64 && make -j8
   - 若需要编译模型转换工具，cmake 命令加上 -DMNN_BUILD_CONVERTER=ON -DMNN_BUILD_SHARED_LIBS=OFF -DMNN_WIN_RUNTIME_MT=ON
   - 若需要编译 MNN CUDA，MNN_WIN_RUNTIME_MT 和 MNN_BUILD_SHARED_LIBS 需要设成 ON ，另外加上 -DMNN_CUDA=ON: cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DMNN_BUILD_SHARED_LIBS=ON -DMNN_WIN_RUNTIME_MT=ON -DMNN_CUDA=ON
   - Windows 上建议使用 Interpreter::destroy , Tensor::destroy , Module::destroy 等方法进行 MNN 相关内存对象的析构，不要直接使用 delete （直接使用 delete 在 -DMNN_WIN_RUNTIME_MT=ON 时会出问题）
+- 使用 Visiual-Studio 默认编译器的情况下，不支持 Arm 架构，也不支持使用汇编或AVX512指令集进一步加速。有需求的情况参考下文使用clang编译
 
-## Windows(ARM架构)
-- 环境要求
-  - Microsoft Visual Studio >= 2017
+## Windows(Visual-Studio+Clang)
+- 编译环境
+  - x64编译：在设置中找到vcvars64.bat（适用于 VS 2017 的 x64 本机工具命令提示）并单击，打开VS编译x64架构程序的虚拟环境
+  - x86(32位)编译：在设置中找到vcvarsamd64_x86.bat（VS 2017的 x64_x86 交叉工具命令提示符）并单击，打开VS交叉编译x86架构程序的虚拟环境
+  - arm64编译：在设置中找到（适用于 VS 2019 的 ARM64 本机工具命令提示），打开VS交叉编译x86架构程序的虚拟环境
+- 软件要求
+  - Microsoft Visual Studio >= 2019
   - cmake >= 3.13
   - Ninja
   - Clang
     - Clang 安装参考: https://learn.microsoft.com/en-us/cpp/build/clang-support-msbuild?view=msvc-170#install-1
 - 相关编译选项
   - 同`Linux/MacOS`
-- 具体步骤
+- 编译Arm架构：
   - 打开vs的ARM64命令行工具
   - 进入 MNN 根目录
   - mkdir build && cd build
   - cmake .. -G Ninja -DCMAKE_C_COMPILER="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\ARM64\bin\clang.exe" -DCMAKE_CXX_COMPILER="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\ARM64\bin\clang++.exe"  -DCMAKE_LINKER="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\ARM64\bin\lld.exe" -DCMAKE_BUILD_TYPE=Release
+    - Visual Studio 安装路径不一致的，可自行修改脚本
+  - ninja -j16
+
+- 编译x64架构：
+  - 打开vs的x64命令行工具
+  - 进入 MNN 根目录
+  - mkdir build && cd build
+  - cmake .. -G Ninja -DCMAKE_C_COMPILER="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin\clang.exe" -DCMAKE_CXX_COMPILER="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin\clang++.exe"  -DCMAKE_LINKER="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin\lld.exe" -DCMAKE_BUILD_TYPE=Release
     - Visual Studio 安装路径不一致的，可自行修改脚本
   - ninja -j16
 
@@ -131,7 +148,7 @@ mkdir build && cd build
 
 
 ## 其他平台交叉编译
-由于交叉编译的目标设备及厂商提供的编译环境类型众多，本文恕无法提供手把手教学。 以下是大致流程，请按照具体场景做相应修改。  
+由于交叉编译的目标设备及厂商提供的编译环境类型众多，本文恕无法提供手把手教学。 以下是大致流程，请按照具体场景做相应修改。
 交叉编译大致上分为以下两个步骤，即获取交叉编译器以及配置CMake进行交叉编译。
 1. 获取交叉编译工具链
    - 以Linaro工具链为例。首先从[Linaro](https://releases.linaro.org/components/toolchain/binaries/latest-7/)网页中按照宿主机以及交叉编译目标设备来选择合适的工具链。这里我们以`arm-linux-gnueabi`为例，点击网页上的链接，进入[arm-linux-gnueabi](https://releases.linaro.org/components/toolchain/binaries/latest-7/arm-linux-gnueabi/)页面。 按照宿主机类型(这里以X64 Linux为例)选择下载链接, 文件名形如 gcc-linaro-7.5.0-2019.12-x86_64_arm-linux-gnueabi.tar.xz 下载后解压到任意目录。
@@ -139,7 +156,7 @@ mkdir build && cd build
    - Toolchain法：对于常用的交叉编译配置，工具链提供方或网络上可能已经有现成的CMake Toolchain。 这种情况下使用如下命令即可:
         ```bash
         mkdir build
-        cd build 
+        cd build
         cmake 其他CMake参数 /MNN/源码/路径 -DCMAKE_TOOLCHAIN_FILE=CMake/Toolchain/文件/路径
         ```
    - 手动配置法
@@ -181,7 +198,7 @@ mkdir build && cd build
 参考 https://emscripten.org/docs/getting_started/downloads.html ，安装完成后并激活，此时可使用 emcmake
 
 ### 编译（通用）
-- 使用 emcmake cmake 替代 cmake ，然后 make 即可: 
+- 使用 emcmake cmake 替代 cmake ，然后 make 即可:
 ```
 mkdir build
 cd build
@@ -193,7 +210,7 @@ emmake make MNN -j16
 
 ### SIMD 支持
 
-- 如果确认目标设备支持Web Simd ，在cmake时加上 -msimd128 -msse4.1 ，可以较大提升性能，eg: 
+- 如果确认目标设备支持Web Simd ，在cmake时加上 -msimd128 -msse4.1 ，可以较大提升性能，eg:
 ```
 mkdir build
 cd build
@@ -202,7 +219,7 @@ emmake make MNN -j16
 ```
 
 ### 测试
-由于Web上文件系统不一致，建议只编译run_test.out运行，其他测试工具需要加上--preload-file {dir} 
+由于Web上文件系统不一致，建议只编译run_test.out运行，其他测试工具需要加上--preload-file {dir}
 
 - 编译示例
 

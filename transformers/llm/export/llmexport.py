@@ -32,6 +32,8 @@ class LlmExporter(torch.nn.Module):
         self.load_model(args.path)
 
     def init_from_args(self, args):
+        self.visual = None
+        self.audio = None
         self.args = args
         self.max_length = 128
         self.stop_ids = []
@@ -109,7 +111,6 @@ class LlmExporter(torch.nn.Module):
                     self.stop_ids.append(id)
         self.stop_ids = [stop_id for stop_id in self.stop_ids if stop_id is not None]
         self.stop_ids = list(set(self.stop_ids))
-        self.visual = None
         model_mapper = ModelMapper()
 
         self.tie_word_embeddings = self.args.tie_embed and (hasattr(self.config, 'tie_word_embeddings') and self.config.tie_word_embeddings)
@@ -133,6 +134,8 @@ class LlmExporter(torch.nn.Module):
             self.num_key_value_heads = self.num_attention_heads
         if not hasattr(self, 'rope_theta') or self.rope_theta is None:
             self.rope_theta = 10000.0
+        if not hasattr(self, 'rope_ratio') or self.rope_ratio is None:
+            self.rope_ratio = 1.0
         if not hasattr(self, 'head_dim') or self.head_dim is None:
             if isinstance(self.num_attention_heads, list):
                 self.head_dim = [self.hidden_size // atten_head for atten_head in self.num_attention_heads]
@@ -260,7 +263,7 @@ class LlmExporter(torch.nn.Module):
                 input_ids: torch.Tensor,
                 attention_mask: torch.Tensor,
                 position_ids: torch.Tensor,
-                past_key_values: Optional[list[torch.Tensor]] = None,
+                past_key_values: Optional[List[torch.Tensor]] = None,
                 logits_index: int = -1,
                 cross_attention_states: Optional[torch.Tensor] = None,
                 cross_attention_mask: Optional[torch.Tensor] = None,
@@ -398,6 +401,7 @@ class LlmExporter(torch.nn.Module):
                     word = ''
         return word
 
+    @torch.no_grad()
     def response(self, query):
         # self.imitate_quant()
         self.decode_buffer = []
@@ -428,7 +432,7 @@ class LlmExporter(torch.nn.Module):
                                                    past_key_values,
                                                    cross_attention_states,
                                                    cross_attention_mask)
-            token_id = torch.argmax(logits)
+            token_id = torch.argmax(logits[:,-1,:])
             if token_id in self.stop_ids:
                 print("", end='\n')
                 break
@@ -788,7 +792,10 @@ class LlmExporter(torch.nn.Module):
             vocab = self.tokenizer.get_vocab()
             vocab_list = ['<unk>' for i in range(len(vocab))]
             for k, v in vocab.items():
-                vocab_list[int(v)] = bytes([unicode_to_byte(ord(c)) for c in k])
+                try:
+                    vocab_list[int(v)] = bytes([unicode_to_byte(ord(c)) for c in k])
+                except:
+                    vocab_list[int(v)] = k.encode('utf-8')
 
             special_list = list(self.tokenizer.added_tokens_decoder.keys())
             with open(file_path, "w", encoding="utf8") as fp:

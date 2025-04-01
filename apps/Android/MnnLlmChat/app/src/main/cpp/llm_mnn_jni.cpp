@@ -45,6 +45,7 @@ using PromptItem = std::pair<std::string, std::string>;
 static std::vector<PromptItem> history{};
 static bool stop_requested = false;
 static bool is_r1 = false;
+static bool s_is_diffusion = false;
 static std::string prompt_string_for_debug{};
 static std::string response_string_for_debug{};
 
@@ -126,8 +127,13 @@ JNIEXPORT jlong JNICALL Java_com_alibaba_mnnllm_android_ChatSession_initNative(J
                                                                                     jboolean use_tmp_path,
                                                                                     jobject chat_history,
                                                                                     jboolean is_diffusion,
-                                                                                    jboolean r1) {
+                                                                                    jboolean r1,
+                                                                                    jboolean backend,
+                                                                                    jstring sampler) {
+    s_is_diffusion = is_diffusion;
     is_r1 = r1;
+    bool use_opencl = backend;
+    std::string sp = std::string(env->GetStringUTFChars(sampler, 0));
     const char* root_cache_dir = env->GetStringUTFChars(rootCacheDir, 0);
     const char* model_id = env->GetStringUTFChars(modelId, 0);
     std::string new_model_id(model_id);
@@ -148,6 +154,12 @@ JNIEXPORT jlong JNICALL Java_com_alibaba_mnnllm_android_ChatSession_initNative(J
     MNN::Express::ExecutorScope s(executor);
     auto llm = Llm::createLLM(model_dir_str);
     std::string extra_config = use_mmap ? R"({"use_mmap":true)" : R"({"use_mmap":false)";
+    if (use_opencl) {
+        extra_config += R"(,"backend_type":"opencl")";
+    } else {
+        extra_config += R"(,"backend_type":"cpu")";
+    }
+    extra_config += R"(,"sampler_type":")" + sp + R"(")";
     if (use_mmap) {
         std::string temp_dir = root_cache_dir_str + R"(/tmp)";
         extra_config += R"(,"tmp_path":")" + temp_dir + R"(")";
@@ -278,6 +290,9 @@ JNIEXPORT jobject JNICALL Java_com_alibaba_mnnllm_android_ChatSession_submitNati
 
 
 JNIEXPORT void JNICALL Java_com_alibaba_mnnllm_android_ChatSession_resetNative(JNIEnv* env, jobject thiz, jlong llmPtr) {
+    if (s_is_diffusion) {
+        return;
+    }
     history.resize(1);
     Llm* llm = reinterpret_cast<Llm*>(llmPtr);
     if (llm) {
@@ -311,6 +326,8 @@ Java_com_alibaba_mnnllm_android_ChatSession_submitDiffusionNative(JNIEnv *env, j
                                                                        jlong instance_id,
                                                                        jstring input,
                                                                        jstring joutput_path,
+                                                                       jint iter_num,
+                                                                       jint random_seed,
                                                                        jobject progressListener) {
     auto* diffusion = reinterpret_cast<DiffusionSession*>(instance_id); // Cast back to Llm*
     if (!diffusion) {
@@ -324,7 +341,11 @@ Java_com_alibaba_mnnllm_android_ChatSession_submitDiffusionNative(JNIEnv *env, j
     std::string prompt = env->GetStringUTFChars(input, nullptr);
     std::string output_path = env->GetStringUTFChars(joutput_path, nullptr);
     auto start = std::chrono::high_resolution_clock::now();
-    diffusion->Run(prompt, output_path, [env, progressListener, onProgressMethod](int progress) {
+    diffusion->Run(prompt,
+                   output_path,
+                   iter_num,
+                   random_seed,
+                   [env, progressListener, onProgressMethod](int progress) {
         if (progressListener && onProgressMethod) {
             jstring javaString =  env->NewStringUTF(std::to_string(progress).c_str());
             env->CallBooleanMethod(progressListener, onProgressMethod,  javaString);

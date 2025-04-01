@@ -4,6 +4,7 @@ import json
 import torch
 import numpy as np
 
+from .torch_utils import quant as torch_quant
 from tqdm import tqdm
 from .spinner import spinner_run
 from .gptq import GPTQ
@@ -158,7 +159,7 @@ class MNNConveter:
         new_ops = []
         with open(self.mnn_weight_path, 'wb') as self.mnn_weight:
             for op in tqdm(mnn_graph['oplists'], 'Quant weights'):
-                if op['type'] == 'Extra':
+                if op['type'] == 'Extra' or op['type'] == 'LayerNorm':
                     new_ops += self.rebuild_op(op, mnn_graph)
                 else:
                     new_ops.append(op)
@@ -168,58 +169,14 @@ class MNNConveter:
         return self.mnn_weight_path
 
     def quant(self, weight, quant_bit, quant_block, symmetric):
-        if torch.cuda.is_available():
-            weight = weight.cuda()
-        if torch.backends.mps.is_available():
-            weight = weight.to('mps')
-        oc, ic = weight.shape
-        if quant_block == 0:
-            block_size = ic
-        else:
-            block_size = quant_block
-        while ic % block_size != 0:
-            block_size /= 2
-        block_size = int(block_size)
-        block_num = ic // block_size
-        weight = weight.reshape(oc, block_num, block_size)
-        offset = 1 << (quant_bit - 1)
-        clip_max = offset - 1
-        if symmetric:
-            clip_min = -clip_max
-            abs_max, _ = torch.max(torch.abs(weight), axis=-1, keepdims=True)
-            scale = abs_max / clip_max
-            q_weight = torch.round(weight / scale)
-            q_weight = (torch.clamp(q_weight.flatten(), clip_min, clip_max) + offset).to(torch.uint8)
-            alpha = scale.flatten()
-        else:
-            clip_min = -offset
-            max_val, _ = torch.max(weight, axis=-1, keepdims=True)
-            min_val, _ = torch.min(weight, axis=-1, keepdims=True)
-            scale = (max_val - min_val) / (clip_max - clip_min)
-
-            if self.config.args.awq:
-                q_weight = torch.round(weight / scale) - torch.round(min_val / scale) + clip_min
-                zeros =  (torch.round(min_val / scale) - clip_min) * scale
-            else:
-                q_weight = torch.round((weight - min_val) / scale) + clip_min
-                zeros =  min_val - scale * clip_min
-            q_weight = (torch.clamp(q_weight.flatten(), clip_min, clip_max) + offset).to(torch.uint8)
-            alpha = torch.stack([zeros.flatten(), scale.flatten()], axis=-1).flatten()
-
-        q_weight = q_weight.reshape(-1, 2)
-        if quant_bit == 4:
-            q_weight = q_weight[:, 0] * 16 + q_weight[:, 1]
-
-        # support for `MNN >= 2.9.6`
-        clip_min = 1
-
-        if q_weight.device is not torch.device('cpu'):
-            return q_weight.cpu(), alpha.float().cpu(), clip_min
-        return q_weight, alpha.float(), clip_min
+        q_weight, alpha = torch_quant(weight, quant_bit, quant_block, symmetric, self.config.args.awq)
+        return q_weight, alpha
 
     def write_weight(self, data):
         if isinstance(data, torch.Tensor):
             data = data.numpy()
+        if isinstance(data, list):
+            data = np.array(data).astype(np.float32)
         return self.mnn_weight.write(data.tobytes())
 
     def write_header(self, ic, oc, quant_bit):
@@ -245,8 +202,9 @@ class MNNConveter:
             weight_len = self.write_weight(half_weight)
             alpha_len, q_min, shape_int32, header_len = 0, 0, False, 0
         else:
-            assert(quant_bit in (4, 8))
-            q_weight, alpha, q_min = self.quant(linear.weight.data, quant_bit, quant_block, symmetric)
+            q_min = 1
+            assert(quant_bit in (1, 2, 4, 8))
+            q_weight, alpha = self.quant(linear.weight.data, quant_bit, quant_block, symmetric)
             header_len, shape_int32 = self.write_header(ic, oc, quant_bit)
             weight_len = self.write_weight(q_weight) + header_len
             alpha_len = self.write_weight(alpha)
@@ -267,11 +225,40 @@ class MNNConveter:
         return tensor_idx
 
     def rebuild_op(self, op, graph):
-        op_type = op['main']['type']
+        if "type" in op['main']:
+            op_type = op['main']['type']
+        else:
+            op_type = op['type']
         if op_type == 'FakeLinear':
             return self.rebuild_linear(op, graph)
         if op_type == 'FusedAttention':
             return self.rebuild_attnention(op, graph)
+        if op_type == "LayerNorm":
+            return self.rebuild_layernorm(op, graph)
+
+    def rebuild_layernorm(self, op, graph):
+        if "gamma" not in op['main'] or "beta" not in op['main']:
+            return [op]
+        attr = op['main']
+        gamma = attr['gamma']
+        beta = attr['beta']
+        gamma_len = self.write_weight(gamma)
+        beta_len = self.write_weight(beta)
+        del attr['gamma']
+        del attr['beta']
+        external = [self.mnn_weight_offset, gamma_len, beta_len]
+        self.mnn_weight_offset += (gamma_len + beta_len)
+        attr['external'] = external
+        layernorm_op = {
+            "name": op['name'],
+            "inputIndexes": op['inputIndexes'],
+            "outputIndexes": op['outputIndexes'],
+            "type": "LayerNorm",
+            "main_type": "LayerNorm",
+            "main": attr,
+            "defaultDimentionFormat": op['defaultDimentionFormat']
+        }
+        return [layernorm_op]
 
     def rebuild_attnention(self, op, graph):
         attrs = op['main']['attr']
@@ -375,7 +362,7 @@ class MNNConveter:
             quanParameter = {
                 "quantScale": 1.0, "scaleIn": 0.0, "scaleOut": 0.0,
                 "useInt32": False, "has_scaleInt": False, "shapeInt32": shape_int32,
-                "type": 1, "aMax": 0, "aMin": aMin, "readType": readType, "weightSize": 0
+                "type": 1, "aMaxOrBits": quant_bit, "aMin": aMin, "readType": readType, "weightSize": 0
             }
         conv_op = {
             "name": conv_name,

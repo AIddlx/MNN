@@ -103,6 +103,41 @@ options:
                         local mnnconvert path, if invalid, using pymnn.
 ```
 
+### 权重读取
+llmexport.py 同时支持 LLM 的验证功能，有较多的依赖。在没有相应环境的情况下，MNN-LLM也提供由 safetensors 或 gguf 文件读取权重的工具，可以降低内存需求，提高转换速度。使用方法如下：
+
+#### 权重读取前置工作
+1. 下载模型结构：在如下地址找到对应的MNN模型并下载（建文件夹 model，单独下载4个文件： llm.mnn , llm_config.json, tokenizer.txt , config.json）
+```
+https://modelscope.cn/organization/MNN
+```
+
+2. 安装 pymnn ，并把 llm.mnn 转换成 llm.mnn.json
+```
+pip install MNN
+mnnconvert -f MNN --modelFile model/llm.mnn --JsonFile model/llm.mnn.json
+```
+
+#### safetensors 转 mnn
+
+使用 safetensors2mnn.py 读取权重：
+
+```
+python3 safetensors2mnn.py --path /Users/xtjiang/.cache/modelscope/hub/Qwen/Qwen2___5-0___5B-Instruct --mnn_dir model 
+```
+
+safetensors2mnn.py 支持设定量化参数，和 llmexport.py 一致
+
+#### gguf 转 mnn
+使用 gguf2mnn.py 读取 gguf 文件
+
+```
+python3 gguf2mnn.py --gguf ~/third/llama.cpp/build/ggml-model-Q4_K.gguf --mnn_dir model
+```
+
+目前本方案不支持多模态的模型转换。
+
+
 ## 模型推理
 
 ### 编译
@@ -144,12 +179,12 @@ make -j16
 ```
 cd project/android
 mkdir build_64
-../build_64.sh "-DMNN_LOW_MEMORY=true -DMNN_CPU_WEIGHT_DEQUANT_GEMM=true -DMNN_BUILD_LLM=true -DMNN_SUPPORT_TRANSFORMER_FUSE=true -DMNN_ARM82=true -DMNN_OPENCL=true -DMNN_USE_LOGCAT=true"
+../build_64.sh -DMNN_LOW_MEMORY=true -DMNN_CPU_WEIGHT_DEQUANT_GEMM=true -DMNN_BUILD_LLM=true -DMNN_SUPPORT_TRANSFORMER_FUSE=true -DMNN_ARM82=true -DMNN_OPENCL=true -DMNN_USE_LOGCAT=true
 ```
 
 #### iOS: 参考 transformers/llm/engine/ios/README.md
 ```
-sh package_scripts/ios/buildiOS.sh "-DMNN_ARM82=true -DMNN_LOW_MEMORY=true -DMNN_SUPPORT_TRANSFORMER_FUSE=true -DMNN_BUILD_LLM=true -DMNN_CPU_WEIGHT_DEQUANT_GEMM=true"
+sh package_scripts/ios/buildiOS.sh -DMNN_ARM82=true -DMNN_LOW_MEMORY=true -DMNN_SUPPORT_TRANSFORMER_FUSE=true -DMNN_BUILD_LLM=true -DMNN_CPU_WEIGHT_DEQUANT_GEMM=true
 ```
 
 #### Web
@@ -159,14 +194,14 @@ sh package_scripts/ios/buildiOS.sh "-DMNN_ARM82=true -DMNN_LOW_MEMORY=true -DMNN
 
 ```
 mkdir buildweb
-emcmake cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-msimd128 -msse4.1" -DMNN_FORBID_MULTI_THREAD=ON -DMNN_USE_THREAD_POOL=OFF -DMNN_USE_SSE=ON -DMNN_LOW_MEMORY=true -DMNN_CPU_WEIGHT_DEQUANT_GEMM=true -DMNN_BUILD_LLM=true -DMNN_SUPPORT_TRANSFORMER_FUSE=true
+emcmake cmake .. -DCMAKE_BUILD_TYPE=Release -DMNN_FORBID_MULTI_THREAD=ON -DMNN_USE_THREAD_POOL=OFF -DMNN_USE_SSE=OFF -DMNN_LOW_MEMORY=true -DMNN_CPU_WEIGHT_DEQUANT_GEMM=true -DMNN_BUILD_LLM=true -DMNN_SUPPORT_TRANSFORMER_FUSE=true
 make -j16
 ```
 
 - Demo 编译
 
 ```
-emcc ../transformers/llm/engine/llm_demo.cpp -DCMAKE_CXX_FLAGS="-msimd128 -msse4.1" -I ../include -I ../transformers/llm/engine/include libMNN.a libllm.a express/libMNN_Express.a -o llm_demo.js --preload-file ~/qwen2.0_1.5b/ -s ALLOW_MEMORY_GROWTH=1 -o llm_demo.js
+emcc ../transformers/llm/engine/demo/llm_demo.cpp -I ../include -I ../transformers/llm/engine/include libMNN.a libllm.a express/libMNN_Express.a -o llm_demo.js --preload-file ~/qwen2.0_1.5b/ -s ALLOW_MEMORY_GROWTH=1 -o llm_demo.js
 ```
 
 使用如下命令测试：
@@ -218,22 +253,22 @@ node llm_demo.js ~/qwen2.0_1.5b/config.json ~/qwen2.0_1.5b/prompt.txt
     - iOS 上可用如下语句创建临时目录并设置：`NSString *tempDirectory = NSTemporaryDirectory();llm->set_config("{\"tmp_path\":\"" + std::string([tempDirectory UTF8String]) + "\"}")`
 - 硬件配置
   - backend_type: 推理使用硬件后端类型，默认为：`"cpu"`
-  - thread_num: CPU推理使用硬件线程数，默认为：`4`; OpenCL推理时使用`68`
+  - thread_num: CPU推理使用硬件线程数，默认为：`4`; OpenCL推理时使用`68`(不是传统意义的线程数，代表的是opencl buffer存储和tuning wide模式)
   - precision: 推理使用精度策略，默认为：`"low"`，尽量使用`fp16`
   - memory: 推理使用内存策略，默认为：`"low"`，开启运行时量化
 - Sampler配置
-  - sampler_type: 使用的sampler种类，目前支持`greedy`, `temperature`, `topK`, `topP`, `minP`, `tfs`, `typical`, `penalty`8种基本sampler，外加`mixed`(混合sampler)。当选择`mixed`时，依次执行mixed_samplers中的sampler。默认为`mixed`。
-  - mixed_samplers: 当`sampler_type`为`mixed`时有效，默认为`["topK", "tfs", "typical", "topP", "min_p", "temperature"]`
+  - sampler_type: 使用的sampler种类，目前支持`greedy`, `temperature`, `topK`, `topP`, `minP`, `tfs`, `typical`, `penalty`8种基本sampler，外加`mixed`(混合sampler，当选择`mixed`时，依次执行mixed_samplers中的sampler)。默认为`greedy`，但是建议使用`mixed`、`temperature`来增加输出多样性，或使用`penalty`来降低重复。
+  - mixed_samplers: 当`sampler_type`为`mixed`时有效，默认为`["topK", "tfs", "typical", "topP", "min_p", "temperature"]`, 模型计算得到的logits会依次经过这些sampler采样。
   - temperature: `temperature`, `topP`, `minP`, `tfsZ`, `typical`中temerature值，默认为1.0
   - topK: `topK`中top K 个的个数，默认为40
   - topP: `topP`中top P的值，默认为0.9
   - minP: `minP`中min P的值，默认为0.1
-  - tfsZ: `tfs`中Z的值，默认为1.0，即不使用tfs算法
-  - typical: `typical`中p的值，默认为1.0，即不使用typical算法
-  - penalty: `penalty`中对于logits的惩罚项，默认为0.0，即不惩罚
-  - n_gram: `penalty`中最大存储的ngram大小，默认为8
-  - ngram_factor: `penalty`中对于重复ngram的额外惩罚，默认为1.0，即没有额外惩罚
-  - penalty_sampler: `penalty`中最后一步采用的sampling策略，可选"greedy"或"temperature"，默认greedy.
+  - tfsZ: `tfs`中Z的值，默认为1.0 (即不使用tfs算法)
+  - typical: `typical`中p的值，默认为1.0 (即不使用typical算法)
+  - penalty: `penalty`中对于logits中重复token的惩罚项，默认为0.0 (即不惩罚)
+  - n_gram: 最大存储的ngram大小，超过此大小的重复ngram将被禁止重复输出，仅在`penalty`选中时生效，默认为8
+  - ngram_factor: `penalty`中对于重复ngram (n>1) 的额外惩罚，默认为1.0，即没有额外惩罚
+  - penalty_sampler: `penalty`中施加完惩罚项后采用的sampling策略，可选"greedy"或"temperature"，默认greedy.
 
 ##### 配置文件示例
 - `config.json`
@@ -300,6 +335,15 @@ node llm_demo.js ~/qwen2.0_1.5b/config.json ~/qwen2.0_1.5b/prompt.txt
 - 对于音频大模型，在prompt中嵌入音频输入
 ```
 <audio>https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen2-Audio/audio/translate_to_chinese.wav</audio>介绍一下音频里的内容
+```
+
+#### 性能测评
+建议使用config.json, 可以自行配置运行后端、线程数、输出token数限制等选项。
+```
+## 注意：当选择opencl后端时，thread_num需设为68。
+## 注意：测评opencl后端性能时，由于第一次运行会tuning生成缓存文件(性能较慢)，因此需要运行第二次(已经有缓存文件)来看性能数据。
+
+./llm_demo model_dir/config.json prompt.txt
 ```
 
 #### GPTQ权重

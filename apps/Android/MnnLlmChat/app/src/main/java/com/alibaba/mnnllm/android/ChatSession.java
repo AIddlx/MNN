@@ -64,7 +64,9 @@ public class ChatSession implements Serializable {
             rootCacheDir = FileUtils.getMmapDir(modelId, configPath.contains("modelscope"));
             new File(rootCacheDir).mkdirs();
         }
-        nativePtr = initNative(rootCacheDir, modelId, configPath, useTmpPath, historyStringList, isDiffusion, ModelUtils.isR1Model(modelId));
+        boolean use_opencl = ModelPreferences.getBoolean(ApplicationProvider.get(), modelId, ModelPreferences.KEY_BACKEND, false);
+        String sampler = ModelPreferences.getString(ApplicationProvider.get(), modelId, ModelPreferences.KEY_SAMPLER, "greedy");
+        nativePtr = initNative(rootCacheDir, modelId, configPath, useTmpPath, historyStringList, isDiffusion, ModelUtils.isR1Model(modelId), use_opencl, sampler);
         modelLoading = false;
         if (mReleaseRequeted) {
             release();
@@ -107,11 +109,11 @@ public class ChatSession implements Serializable {
         }
     }
 
-    public HashMap<String, Object> generateDiffusion(String input, String output, GenerateProgressListener progressListener) {
+    public HashMap<String, Object> generateDiffusion(String input, String output, int iterNum, int randomSeed, GenerateProgressListener progressListener) {
         synchronized (this) {
             Log.d(TAG, "MNN_DEBUG submit" + input);
             mGenerating = true;
-            HashMap<String, Object> result = submitDiffusionNative(nativePtr, input, output, progressListener);
+            HashMap<String, Object> result = submitDiffusionNative(nativePtr, input, output, iterNum, randomSeed, progressListener);
             mGenerating = false;
             if (mReleaseRequeted) {
                 releaseInner();
@@ -160,10 +162,10 @@ public class ChatSession implements Serializable {
         release();
     }
 
-    public native long initNative(String rootCacheDir,String modelId, String configPath, boolean useTmpPath, List<String> history, boolean isDiffusion, boolean isR1);
+    public native long initNative(String rootCacheDir,String modelId, String configPath, boolean useTmpPath, List<String> history, boolean isDiffusion, boolean isR1, boolean backend, String sampler);
     private native HashMap<String, Object> submitNative(long instanceId, String input, boolean keepHistory, GenerateProgressListener listener);
 
-    private native HashMap<String, Object> submitDiffusionNative(long instanceId, String input, String outputPath, GenerateProgressListener progressListener);
+    private native HashMap<String, Object> submitDiffusionNative(long instanceId, String input, String outputPath, int iterNum, int randomSeed, GenerateProgressListener progressListener);
     private native void resetNative(long instanceId);
 
     private native String getDebugInfoNative(long instanceId);

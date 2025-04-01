@@ -9,6 +9,7 @@ import static com.alibaba.mnnllm.android.utils.KeyboardUtils.showKeyboard;
 
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
 import android.text.Editable;
@@ -19,8 +20,12 @@ import android.view.KeyEvent;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.EditText;
 import android.widget.ImageView;
+import android.widget.Spinner;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -44,6 +49,8 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
+import java.util.Random;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
@@ -94,6 +101,7 @@ public class ChatActivity extends AppCompatActivity {
     private boolean isLoading = false;
     private String sessionName;
     private boolean stopGenerating = false;
+    private TextView toolbarTitle;
 
 
     @Override
@@ -107,7 +115,10 @@ public class ChatActivity extends AppCompatActivity {
         layoutModelLoading = findViewById(R.id.layout_model_loading);
         if (getSupportActionBar() != null) {
             getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+            getSupportActionBar().setDisplayShowTitleEnabled(false);
         }
+        toolbarTitle = findViewById(R.id.toolbar_title);
+        toolbarTitle.setText(modelName);
         chatExecutor = Executors.newScheduledThreadPool(1);
         chatDataManager = ChatDataManager.getInstance(this);
         this.setupSession();
@@ -186,7 +197,7 @@ public class ChatActivity extends AppCompatActivity {
             layoutModelLoading.setVisibility(loading ? View.VISIBLE : View.GONE);
             if (getSupportActionBar() != null) {
                 getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-                getSupportActionBar().setTitle(loading ? getString(R.string.model_loading) : modelName);
+                toolbarTitle.setText(loading ? getString(R.string.model_loading) : getString(R.string.app_name));
             }
         });
     }
@@ -364,18 +375,53 @@ public class ChatActivity extends AppCompatActivity {
         voiceRecordingModule.setup(isAudioModel);
     }
 
+    private int getSamplerSelectionId(String[] items, String item) {
+        Log.d(TAG, "selected item: " + item);
+        int id = 0;
+        while (id < items.length) {
+            if (items[id].equals(item)) {
+                return id;
+            }
+            id++;
+        }
+        return 0;
+    }
+
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         getMenuInflater().inflate(R.menu.menu_chat, menu);
         menu.findItem(R.id.show_performance_metrics)
                 .setChecked(PreferenceUtils.getBoolean(this, PreferenceUtils.KEY_SHOW_PERFORMACE_METRICS, true));
         menu.findItem(R.id.menu_item_use_mmap).setChecked(ModelPreferences.getBoolean(this, modelId, ModelPreferences.KEY_USE_MMAP, true));
+<<<<<<< HEAD
 
         // 添加 API 设置菜单项
         menu.add(Menu.NONE, R.id.nav_api_settings, Menu.NONE, R.string.api_settings)
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+  
 
-
+=======
+        menu.findItem(R.id.menu_item_backend).setChecked(ModelPreferences.getBoolean(this, modelId, ModelPreferences.KEY_BACKEND, false));        
+        MenuItem samplerSpinnerItem = menu.findItem(R.id.menu_item_sampler_spinner);
+        Spinner samplerSpinner = Objects.requireNonNull(samplerSpinnerItem.getActionView()).findViewById(R.id.sampler_spinner);
+        String[] items = new String[]{"greedy", "temperature", "topK", "topP", "minP", "typical", "tfs", "penalty", "mixed"};
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, items);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        samplerSpinner.setAdapter(adapter);
+        samplerSpinner.setSelection(
+                getSamplerSelectionId(items,
+                        ModelPreferences.getString(this, modelId, ModelPreferences.KEY_SAMPLER, getString(R.string.sampler))));
+        samplerSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                String selectedItem = parent.getItemAtPosition(position).toString();
+                ((TextView) view).setTextColor(Color.WHITE); // 设置选中项的字体颜色
+                handleSamplerSpinnerSelection(selectedItem);
+            }
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {}
+        });
+>>>>>>> d332d424a957f9a4765e550de64977a1fb9ff8e5
         return true;
     }
 
@@ -402,6 +448,11 @@ public class ChatActivity extends AppCompatActivity {
             Toast.makeText(this, R.string.reloading_session, Toast.LENGTH_LONG).show();
             ModelPreferences.setBoolean(this, modelId, ModelPreferences.KEY_USE_MMAP, item.isChecked());
             recreate();
+        } else if (item.getItemId() == R.id.menu_item_backend) {
+            item.setChecked(!item.isChecked());
+            Toast.makeText(this, R.string.reloading_session, Toast.LENGTH_LONG).show();
+            ModelPreferences.setBoolean(this, modelId, ModelPreferences.KEY_BACKEND, item.isChecked());
+            recreate();
         }
         else if (item.getItemId() == R.id.nav_api_settings) {
             // 打开 API 设置对话框
@@ -411,6 +462,16 @@ public class ChatActivity extends AppCompatActivity {
 
         return super.onOptionsItemSelected(item);
     }
+
+    private void handleSamplerSpinnerSelection(String selectedItem) {
+        String currentSampler = ModelPreferences.getString(this, modelId, ModelPreferences.KEY_SAMPLER, getString(R.string.sampler));
+        if (!selectedItem.equals(currentSampler)) {
+            Toast.makeText(this, R.string.reloading_session, Toast.LENGTH_LONG).show();
+            ModelPreferences.setString(this, modelId, ModelPreferences.KEY_SAMPLER, selectedItem);
+            recreate();
+        }
+    }
+
 
     @Override
     public void onRequestPermissionsResult(int requestCode,
@@ -553,7 +614,9 @@ public class ChatActivity extends AppCompatActivity {
         HashMap<String, Object> benchMarkResult;
         if (ModelUtils.isDiffusionModel(this.modelName)) {
             String diffusionDestPath = FileUtils.generateDestDiffusionFilePath(this, chatSessionId);
-            benchMarkResult = chatSession.generateDiffusion(input,  diffusionDestPath, progress-> {
+            benchMarkResult = chatSession.generateDiffusion(input,  diffusionDestPath, 20,
+                    new Random(System.currentTimeMillis()).nextInt(),
+                    progress-> {
                 if ("100".equals(progress)) {
                     chatDataItem.setText(getString(R.string.diffusion_generated_message));
                     chatDataItem.setImageUri(Uri.parse(diffusionDestPath));
