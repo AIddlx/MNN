@@ -1,20 +1,5 @@
 package ddlx.api;
 
-import android.app.Service;
-import android.content.Intent;
-import android.os.IBinder;
-import android.os.Binder;
-
-import androidx.preference.PreferenceManager;
-import android.util.Log;
-
-import com.alibaba.mnnllm.android.ChatSession;
-import fi.iki.elonen.NanoHTTPD;
-
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
-
 import java.io.IOException;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
@@ -22,28 +7,109 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import android.app.Service;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.ServiceInfo;
+import android.os.IBinder;
+import android.os.Binder;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.os.Build;
+import androidx.core.app.NotificationCompat;
+import androidx.preference.PreferenceManager;
+import android.util.Log;
+import android.os.Process;
+
+import com.alibaba.mnnllm.android.ChatSession;
+import com.alibaba.mnnllm.android.R;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import fi.iki.elonen.NanoHTTPD;
+
 public class OpenAICompatibleService extends Service {
+    private static final String CHANNEL_ID = "api_service_channel";
+    private static final int NOTIFICATION_ID = 1001;
     private static final String TAG = "OpenAICompatibleService";
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL_ID,
+                    "API服务通道",
+                    NotificationManager.IMPORTANCE_LOW
+            );
+            channel.setDescription("用于显示API服务的持久通知");
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            manager.createNotificationChannel(channel);
+        }
+    }
+
+    private Notification buildPersistentNotification() {
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("MNN API服务运行中")
+                .setContentText("正在监听端口：" + port)
+                .setSmallIcon(R.drawable.ic_stat_service)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOngoing(true)
+                .build();
+    }
    private int port = 8080;
     private ApiServer server;
     private final ApiServiceBinder binder = new ApiServiceBinder();
+    private Context context;
 
     @Override
     public void onCreate() {
         super.onCreate();
+        Log.i(TAG, "OpenAICompatibleService onCreate");
+        context = getApplicationContext();
+        // 创建通知通道
+        createNotificationChannel();
+
+        // 端口初始化，具体值会在onStartCommand中设置
+        port = PreferenceManager.getDefaultSharedPreferences(this)
+            .getInt("api_port", 8080);
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        Log.i(TAG, "OpenAICompatibleService onStartCommand");
+        // 检查Intent中是否有端口参数
+        if (intent != null && intent.hasExtra("port")) {
+            port = intent.getIntExtra("port", port);
+            Log.i(TAG, "Using port from intent: " + port);
+        }
+
+        // 启动前台服务，使用当前端口号更新通知
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, buildPersistentNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+        }
         try {
-           port = PreferenceManager.getDefaultSharedPreferences(this)
-               .getInt("api_port", 8080);
+            // 如果服务器已经在运行，先停止它
+            if (server != null) {
+                server.stop();
+            }
+
+            // 使用当前端口创建并启动新的服务器
             server = new ApiServer();
             server.start();
-           Log.i(TAG, "API server started on port " + port);
+            Log.i(TAG, "API server started and bound to port " + port);
         } catch (IOException e) {
-            Log.e(TAG, "Failed to start API server: " + e.getMessage());
+            Log.e(TAG, "Failed to start or bind API server: " + e.getMessage());
+            return START_NOT_STICKY;
         }
+
+        return START_STICKY;
     }
 
     @Override
     public void onDestroy() {
+        Log.i(TAG, "OpenAICompatibleService onDestroy");
         if (server != null) {
             server.stop();
         }
@@ -123,6 +189,14 @@ public class OpenAICompatibleService extends Service {
         }
 
         try {
+            // 增加请求体大小限制
+            int maxBodySize = 800*1024 * 1024; // 假设最大请求体大小为1MB
+            if (session.getInputStream().available() > maxBodySize) {
+                failedRequests.incrementAndGet();
+                return createErrorResponse(Response.Status.PAYLOAD_TOO_LARGE, "Request body too large",
+                        "invalid_request_error", "payload_too_large");
+            }
+
             Response response = handleRequest(session, uri);
             addCorsHeaders(response);
 
@@ -134,8 +208,11 @@ public class OpenAICompatibleService extends Service {
             return response;
         } catch (JSONException e) {
             failedRequests.incrementAndGet();
+            Log.e(TAG, "JSON exception in serve method: " + e.getMessage());
             return super.newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "application/json",
                     "{\"error\": \"Internal server error: " + e.getMessage() + "\"}");
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
     }
 
@@ -169,18 +246,15 @@ public class OpenAICompatibleService extends Service {
 
 private Response handleStatus(IHTTPSession session) throws JSONException {
     if (!Method.GET.equals(session.getMethod())) {
-        if (!Method.GET.equals(session.getMethod())) {
-            failedRequests.incrementAndGet();
-            return super.newFixedLengthResponse(Response.Status.METHOD_NOT_ALLOWED, "application/json",
-                    new JSONObject().put("error", "Method not allowed").toString());
-        }
-
-        JSONObject status = new JSONObject()
-                .put("model_loaded", ApiManager.getInstance().isModelLoaded());
-        successRequests.incrementAndGet();
-        return super.newFixedLengthResponse(Response.Status.OK, "application/json", status.toString());
+        failedRequests.incrementAndGet();
+        return super.newFixedLengthResponse(Response.Status.METHOD_NOT_ALLOWED, "application/json",
+                new JSONObject().put("error", "Method not allowed").toString());
     }
-    return null;
+
+    JSONObject status = new JSONObject()
+            .put("model_loaded", ApiManager.getInstance().isModelLoaded());
+    successRequests.incrementAndGet();
+    return super.newFixedLengthResponse(Response.Status.OK, "application/json", status.toString());
 }
     private Response handleModels(IHTTPSession session) throws JSONException {
         if (!Method.GET.equals(session.getMethod())) {
@@ -204,10 +278,12 @@ private Response handleStatus(IHTTPSession session) throws JSONException {
     }
 
     private Response handleChatCompletions(IHTTPSession session) throws JSONException {
+    Log.i(TAG, "Handling chat completions request");
     if (!Method.POST.equals(session.getMethod())) {
+        Log.w(TAG, "Invalid method for chat completions: " + session.getMethod());
         failedRequests.incrementAndGet();
         return createErrorResponse(Response.Status.METHOD_NOT_ALLOWED, "Method not allowed",
-                "invalid_request_error", null);
+                "invalid_request_error", "invalid_api_key");
     }
 
     if (!ApiManager.getInstance().isModelLoaded()) {
@@ -246,13 +322,85 @@ private Response handleStatus(IHTTPSession session) throws JSONException {
                         "invalid_request_error", "messages");
             }
 
-            // 构建完整的上下文字符串
+            // 构建完整的上下文字符串，支持多模态内容
             StringBuilder contextBuilder = new StringBuilder();
+            StringBuilder imgTags = new StringBuilder();
+
             for (int i = 0; i < messages.length(); i++) {
                 JSONObject message = messages.getJSONObject(i);
-                contextBuilder.append(message.getString("role")).append(": ").append(message.getString("content")).append("\n");
+                String role = message.getString("role");
+                
+                // 检查是否包含多模态内容
+                if (message.has("content") && message.get("content") instanceof JSONArray) {
+                    // 处理多模态内容数组
+                    JSONArray contentArray = message.getJSONArray("content");
+                    for (int j = 0; j < contentArray.length(); j++) {
+                        JSONObject contentItem = contentArray.getJSONObject(j);
+                        String type = contentItem.getString("type");
+                        
+                        if ("text".equals(type)) {
+                            // 处理文本内容
+                            contextBuilder.append(role).append(": ").append(contentItem.getString("text")).append("\n");
+                        } else if ("image_url".equals(type)) {
+                            // 处理图像内容
+                            JSONObject imageUrl = contentItem.getJSONObject("image_url");
+                            String imageData = null;
+                            
+                            if (imageUrl.has("url")) {
+                                String url = imageUrl.getString("url");
+                                String base64Data = null;
+                                
+                                if (url.startsWith("data:image/")) {
+                                    // 处理base64编码的图像
+                                    Log.d(TAG, "Processing base64 encoded image data");
+                                    base64Data = url.substring(url.indexOf(",") + 1);
+                                    Log.d(TAG, "Base64 data length: " + base64Data.length());
+                                } else if (url.startsWith("http://") || url.startsWith("https://")) {
+                                    // 处理URL引用的图像
+                                    Log.d(TAG, "Downloading image from URL: " + url);
+                                    try {
+                                        base64Data = NetworkUtils.downloadImageAsBase64(url);
+                                        Log.d(TAG, "Successfully downloaded and encoded image, length: " + base64Data.length());
+                                    } catch (Exception e) {
+                                        Log.e(TAG, "Failed to download image from URL: " + e.getMessage());
+                                        // 增加异常处理，返回错误响应
+                                        return createErrorResponse(Response.Status.INTERNAL_ERROR, 
+                                                "Failed to process image: " + e.getMessage(),
+                                                "server_error", null);
+                                    }
+                                } else {
+                                    Log.w(TAG, "Unsupported image URL format: " + url);
+                                }
+                                
+                                // 统一处理base64图像数据
+                                if (base64Data != null) {
+                                    Log.d(TAG, "Processing base64 image data with ImageFileManager");
+                                    String imagePath = ImageFileManager.getInstance(context).processBase64Image(base64Data);
+                                    if (imagePath != null) {
+                                        Log.d(TAG, "Image processed successfully, path: " + imagePath);
+                                        // 在图片标签前后添加空格，确保与文本内容有良好的分隔
+                                        imgTags.append("<img>").append(imagePath).append("</img> ");
+                                    } else {
+                                        Log.e(TAG, "Failed to process image: ImageFileManager returned null path");
+                                        // 增加异常处理，返回错误响应
+                                        return createErrorResponse(Response.Status.INTERNAL_ERROR, 
+                                                "Failed to process image: Invalid image data",
+                                                "server_error", null);
+                                    }
+                                } else {
+                                    Log.w(TAG, "No valid base64 data to process");
+                                }
+                            }
+                        }
+                    }
+                } else if (message.has("content")) {
+                    // 处理纯文本内容
+                    contextBuilder.append(role).append(": ").append(message.getString("content")).append("\n");
+                }
             }
-            String context = contextBuilder.toString();
+
+            // 将所有<img>标签放在最前面
+            String context = imgTags.toString() + contextBuilder.toString();
 
             ChatSession chatSession = ApiManager.getInstance().getCurrentSession();
             if (chatSession == null) {
@@ -287,6 +435,7 @@ private Response handleStatus(IHTTPSession session) throws JSONException {
     }
 
     private Response handleStreamingResponse(ChatSession chatSession, String userMessage) {
+    Log.i(TAG, "Starting streaming response");
     try {
         PipedInputStream in = new PipedInputStream();
         PipedOutputStream out = new PipedOutputStream();
@@ -297,6 +446,7 @@ private Response handleStatus(IHTTPSession session) throws JSONException {
         streamResponse.addHeader("Content-Type", "text/event-stream; charset=utf-8");
 
         Thread generationThread = new Thread(() -> {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_FOREGROUND);
             try {
                 String responseId = "chatcmpl-" + System.currentTimeMillis();
                 long created = System.currentTimeMillis() / 1000;
@@ -304,6 +454,7 @@ private Response handleStatus(IHTTPSession session) throws JSONException {
                 chatSession.generate(userMessage, progress -> {
                     try {
                         if (progress != null) {
+                            Log.d(TAG, "Generated progress: " + progress);
                             JSONObject delta = createDeltaResponse(responseId, created, progress);
                             String sseMessage = "data: " + delta.toString() + "\n\n";
                             out.write(sseMessage.getBytes(StandardCharsets.UTF_8));
@@ -320,6 +471,7 @@ private Response handleStatus(IHTTPSession session) throws JSONException {
                 // 发送完成标记
                 out.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
                 out.flush();
+                Log.i(TAG, "Streaming response completed");
             } catch (Exception e) {
                 Log.e(TAG, "Error in generation process: " + e.getMessage());
             } finally {

@@ -1,15 +1,55 @@
 package ddlx.api;
 
-import android.util.Log;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.Collections;
 import java.util.List;
+
+import android.util.Log;
 import java.net.InetAddress;
 import java.net.Inet4Address;
 
-
 public class NetworkUtils {
     private static final String TAG = "NetworkUtils";
+
+    /**
+     * 从URL下载图片并转换为Base64编码
+     * 
+     * @param imageUrl 图片URL
+     * @return Base64编码的图片数据
+     */
+    public static String downloadImageAsBase64(String imageUrl) throws Exception {
+        java.net.URL url = new java.net.URL(imageUrl);
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setRequestMethod("GET");
+        connection.setConnectTimeout(15000);
+        connection.setReadTimeout(15000);
+        
+        try {
+            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                throw new Exception("Failed to download image: " + connection.getResponseMessage());
+            }
+            
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            try (InputStream inputStream = connection.getInputStream()) {
+                byte[] buffer = new byte[4096];
+                int bytesRead;
+                while ((bytesRead = inputStream.read(buffer)) != -1) {
+                    output.write(buffer, 0, bytesRead);
+                }
+            }
+            
+            byte[] imageData = output.toByteArray();
+            return android.util.Base64.encodeToString(imageData, android.util.Base64.DEFAULT);
+            
+        } finally {
+            connection.disconnect();
+        }
+    }
 
     public static String getLocalIpAddress() {
         try {

@@ -6,7 +6,6 @@ package com.alibaba.mnnllm.android;
 import android.util.Log;
 
 import com.alibaba.mls.api.ApplicationProvider;
-import ddlx.api.ApiManager;
 import com.alibaba.mnnllm.android.chat.ChatDataItem;
 import com.alibaba.mnnllm.android.utils.FileUtils;
 import com.alibaba.mnnllm.android.utils.ModelPreferences;
@@ -17,6 +16,8 @@ import java.io.Serializable;
 import java.util.HashMap;
 import java.util.List;
 import java.util.stream.Collectors;
+
+import ddlx.api.ApiManager;
 
 public class ChatSession implements Serializable {
 
@@ -71,11 +72,8 @@ public class ChatSession implements Serializable {
         if (mReleaseRequeted) {
             release();
         }   else {
-            // 模型加载成功，设置为已加载状态
-            ApiManager.getInstance().init(ApplicationProvider.get());
-            // 设置当前会话并启动API服务
-            ApiManager.getInstance().setCurrentSession(this);
-            ApiManager.getInstance().setModelLoaded(true);
+            ApiManager.getInstance().setupWithSession(this);
+
         }
     }
 

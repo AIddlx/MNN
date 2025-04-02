@@ -14,51 +14,100 @@ import com.alibaba.mnnllm.android.ChatSession;
 
 public class ApiManager implements ServiceConnection {
     private static final String TAG = "ApiManager";
-    private static ApiManager instance;
-    private Context context;
+    private static volatile ApiManager instance;
+    private final Context applicationContext;
     private boolean isModelLoaded = false;
     private ChatSession currentSession;
     private ApiStatusView statusView;
     private OpenAICompatibleService.ApiServiceBinder serviceBinder;
     private boolean isServiceBound = false;
-   private int currentPort = 8080;
+    private int currentPort = 8080;
 
     // 添加 ChatSessionBinder 内部类
     public class ChatSessionBinder extends Binder {
         private final ChatSession session;
-        
+
         public ChatSessionBinder(ChatSession session) {
             this.session = session;
         }
-        
+
         public ChatSession getSession() {
             return session;
         }
     }
 
-    private ApiManager() {}
+    private ApiManager(Context context) {
+        if (context == null) {
+            throw new IllegalArgumentException("Context cannot be null");
+        }
+        this.applicationContext = context.getApplicationContext();
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this.applicationContext);
+        currentPort = prefs.getInt("api_port", 8080);
+        Log.i(TAG, "ApiManager initialized with context");
+    }
 
-    public static ApiManager getInstance() {
+    /**
+     * 获取ApiManager实例，需要提供Context进行初始化
+     * 
+     * @param context 上下文，用于初始化
+     * @return ApiManager实例
+     */
+    public static ApiManager getInstance(Context context) {
         if (instance == null) {
-            instance = new ApiManager();
+            synchronized (ApiManager.class) {
+                if (instance == null) {
+                    instance = new ApiManager(context);
+                }
+            }
         }
         return instance;
     }
 
-    public Context getContext() {
-        return context;
+    /**
+     * 获取ApiManager实例，此方法仅在已初始化后可用
+     * 如果实例未初始化，将尝试通过反射获取ApplicationContext
+     * 
+     * @return ApiManager实例
+     */
+    public static ApiManager getInstance() {
+        if (instance == null) {
+            synchronized (ApiManager.class) {
+                if (instance == null) {
+                    // 尝试通过反射获取ApplicationContext
+                    Context appContext = getApplicationContextStatic();
+                    if (appContext != null) {
+                        instance = new ApiManager(appContext);
+                    } else {
+                        Log.e(TAG, "ApiManager not initialized and failed to get ApplicationContext");
+                        throw new IllegalStateException("ApiManager not initialized. Call getInstance(Context) first");
+                    }
+                }
+            }
+        }
+        return instance;
     }
 
-
-    public void init(Context context) {
-        if (context == null) {
-            Log.e(TAG, "Cannot initialize with null context");
-            return;
+    /**
+     * 通过反射获取ApplicationContext的静态方法
+     */
+    private static Context getApplicationContextStatic() {
+        try {
+            Class<?> activityThread = Class.forName("android.app.ActivityThread");
+            Object thread = activityThread.getMethod("currentActivityThread").invoke(null);
+            Object app = activityThread.getMethod("getApplication").invoke(thread);
+            if (app == null) {
+                Log.e(TAG, "Failed to get application context through reflection");
+                return null;
+            }
+            return (Context) app;
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to get application context: " + e.getMessage());
+            return null;
         }
-       SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
-       currentPort = prefs.getInt("api_port", 8080);Log.i(TAG, "ApiManager initialized with context");
-        this.context = context.getApplicationContext(); // 使用 ApplicationContext 避免内存泄漏
-        Log.i(TAG, "ApiManager initialized with context");
+    }
+
+    public Context getContext() {
+        return applicationContext;
     }
 
     public void setStatusView(ApiStatusView view) {
@@ -68,7 +117,7 @@ public class ApiManager implements ServiceConnection {
     public boolean isModelLoaded() {
         return isModelLoaded;
     }
-    
+
     public void setCurrentSession(ChatSession session) {
         this.currentSession = session;
     }
@@ -77,21 +126,43 @@ public class ApiManager implements ServiceConnection {
         return currentSession;
     }
 
+    private Context getApplicationContext() {
+        return getApplicationContextStatic();
+    }
+
+    /**
+     * 一键初始化和配置 ApiManager
+     * 
+     * @param chatSession 聊天会话
+     */
+    public void setupWithSession(ChatSession chatSession) {
+        Context applicationContext = getApplicationContext();
+        if (applicationContext == null) {
+            Log.e(TAG,
+                    "Failed to get application context automatically, please call setupWithSession(chatSession, context) instead");
+            return;
+        }
+        setCurrentSession(chatSession);
+        setModelLoaded(true);
+    }
+
     public void setModelLoaded(boolean loaded) {
         isModelLoaded = loaded;
         if (loaded) {
             Log.i(TAG, "Model loading completed, checking context...");
-            if (context != null) {
+            if (applicationContext != null) {
                 startApiService();
                 Log.i(TAG, "Model loaded successfully, API service started");
             } else {
                 Log.e(TAG, "Context not initialized, please call init() first");
-            }            
+            }
+        } else {
+            Log.e(TAG, "Model loading failed");
         }
     }
 
     public void startApiService() {
-        if (context == null) {
+        if (applicationContext == null) {
             Log.e(TAG, "Context not initialized");
             return;
         }
@@ -103,14 +174,14 @@ public class ApiManager implements ServiceConnection {
         try {
             bindApiService();
 
-            Intent intent = new Intent(context, OpenAICompatibleService.class);
-           intent.putExtra("port", currentPort);
-            context.startService(intent);
-        
+            Intent intent = new Intent(applicationContext, OpenAICompatibleService.class);
+            intent.putExtra("port", currentPort);
+            applicationContext.startService(intent);
+
             if (statusView != null) {
                 statusView.updateStatus(true);
             }
-           Log.i(TAG, "OpenAI compatible API service started on port " + currentPort);Log.i(TAG, "Available endpoints:");
+            Log.i(TAG, "OpenAI compatible API service started on port " + currentPort);
             Log.i(TAG, "Available endpoints:");
             Log.i(TAG, "  GET /v1/status - Check server and model status");
             Log.i(TAG, "  GET /v1/models - List available models");
@@ -121,20 +192,21 @@ public class ApiManager implements ServiceConnection {
         }
     }
 
-   public void updatePort(int port) {
-       if (port != currentPort) {
-           currentPort = port;
-           if (isServiceBound) {
-               stopApiService();
-               startApiService();
-           }
-       }
-   }
+    public void updatePort(int port) {
+        if (port != currentPort) {
+            currentPort = port;
+            if (isServiceBound) {
+                stopApiService();
+                startApiService();
+            }
+        }
+    }
+
     private void bindApiService() {
-        Intent intent = new Intent(context, OpenAICompatibleService.class);
+        Intent intent = new Intent(applicationContext, OpenAICompatibleService.class);
         // 设置包名以支持跨应用调用
-        intent.setPackage(context.getPackageName());
-        context.bindService(intent, this, Context.BIND_AUTO_CREATE);
+        intent.setPackage(applicationContext.getPackageName());
+        applicationContext.bindService(intent, this, Context.BIND_AUTO_CREATE);
     }
 
     @Override
@@ -162,22 +234,36 @@ public class ApiManager implements ServiceConnection {
     }
 
     public void stopApiService() {
-        if (context == null) {
+        if (applicationContext == null) {
             Log.e(TAG, "Context not initialized");
             return;
         }
         if (isServiceBound) {
-            context.unbindService(this);
+            applicationContext.unbindService(this);
             isServiceBound = false;
         }
-        context.stopService(new Intent(context, OpenAICompatibleService.class));
+        applicationContext.stopService(new Intent(applicationContext, OpenAICompatibleService.class));
         if (statusView != null) {
             statusView.updateStatus(false);
         }
         Log.i(TAG, "OpenAI compatible API service stopped");
     }
+
     public int getCurrentPort() {
         return currentPort;
     }
 
+    /**
+     * 处理Base64编码的图像数据，保存为文件并返回文件路径
+     * 
+     * @param base64Data Base64编码的图像数据
+     * @return 保存的图像文件路径
+     */
+    public String processBase64Image(String base64Data) {
+        if (applicationContext == null) {
+            Log.e(TAG, "Context not initialized, cannot process image");
+            return null;
+        }
+        return ImageFileManager.getInstance(applicationContext).processBase64Image(base64Data);
+    }
 }

@@ -29,6 +29,7 @@ import com.alibaba.mnnllm.android.settings.MainSettings;
 import com.alibaba.mnnllm.android.update.UpdateChecker;
 import com.alibaba.mnnllm.android.utils.GithubUtils;
 import com.alibaba.mnnllm.android.utils.ModelUtils;
+import com.google.android.material.navigation.NavigationView;
 import com.techiness.progressdialoglibrary.ProgressDialog;
 import java.io.File;
 import java.util.Objects;
@@ -53,8 +54,6 @@ public class MainActivity extends AppCompatActivity {
         updateChecker.checkForUpdates(this, false);
 
 
-        // 初始化 ApiManager
-        ApiManager.getInstance().init(getApplicationContext());
 
         NavigationView navigationView = findViewById(R.id.nav_view);
         navigationView.setNavigationItemSelectedListener(item -> {

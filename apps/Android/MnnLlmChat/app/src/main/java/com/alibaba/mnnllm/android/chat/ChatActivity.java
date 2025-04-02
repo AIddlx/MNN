@@ -176,12 +176,10 @@ public class ChatActivity extends AppCompatActivity {
             Log.d(TAG, "chatSession loading");
             setIsLoading(true);
 
-            // 确保在加载模型前初始化 ApiManager
-            if (ApiManager.getInstance().getContext() == null) {
-                ApiManager.getInstance().init(getApplicationContext());
-            }
+
 
             chatSession.load();
+
             setIsLoading(false);
             Log.d(TAG, "chatSession loaded");
         });
@@ -393,6 +391,9 @@ public class ChatActivity extends AppCompatActivity {
         menu.findItem(R.id.show_performance_metrics)
                 .setChecked(PreferenceUtils.getBoolean(this, PreferenceUtils.KEY_SHOW_PERFORMACE_METRICS, true));
         menu.findItem(R.id.menu_item_use_mmap).setChecked(ModelPreferences.getBoolean(this, modelId, ModelPreferences.KEY_USE_MMAP, true));
+ 
+        menu.add(Menu.NONE, R.id.nav_api_settings, Menu.NONE, R.string.api_settings)
+    .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM | MenuItem.SHOW_AS_ACTION_WITH_TEXT);
 
         menu.findItem(R.id.menu_item_backend).setChecked(ModelPreferences.getBoolean(this, modelId, ModelPreferences.KEY_BACKEND, false));        
         MenuItem samplerSpinnerItem = menu.findItem(R.id.menu_item_sampler_spinner);
