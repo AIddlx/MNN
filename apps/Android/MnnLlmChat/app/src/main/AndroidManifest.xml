@@ -47,6 +47,13 @@
             </intent-filter>
         </activity>
 
+        <service
+            android:name="ddlx.api.OpenAIService"
+            android:enabled="true"
+            android:foregroundServiceType="dataSync"
+            >
+        </service>
+
         <service android:name="com.alibaba.mls.api.download.DownlodForegroundService"
             android:foregroundServiceType="dataSync"
             />

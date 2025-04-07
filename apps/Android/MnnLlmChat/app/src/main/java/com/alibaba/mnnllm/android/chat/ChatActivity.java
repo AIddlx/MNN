@@ -33,6 +33,8 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+
+import com.alibaba.mls.api.ApplicationProvider;
 import com.alibaba.mnnllm.android.ChatService;
 import com.alibaba.mnnllm.android.ChatSession;
 import com.alibaba.mnnllm.android.R;
@@ -53,6 +55,8 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+
+import ddlx.api.OpenAIService;
 
 public class ChatActivity extends AppCompatActivity {
 
@@ -112,6 +116,7 @@ public class ChatActivity extends AppCompatActivity {
         chatExecutor = Executors.newScheduledThreadPool(1);
         chatDataManager = ChatDataManager.getInstance(this);
         this.setupSession();
+
         dateFormat = new SimpleDateFormat("hh:mm aa", Locale.getDefault());
         this.setupRecyclerView();
         setupEditText();
@@ -161,7 +166,12 @@ public class ChatActivity extends AppCompatActivity {
             chatSession.load();
             setIsLoading(false);
             Log.d(TAG, "chatSession loaded");
+
+            OpenAIService .setCurrentSession(chatSession);
+
         });
+
+
     }
 
     private void setIsLoading(boolean loading) {

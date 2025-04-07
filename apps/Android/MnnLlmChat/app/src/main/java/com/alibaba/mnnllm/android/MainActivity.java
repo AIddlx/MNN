@@ -31,6 +31,8 @@ import com.techiness.progressdialoglibrary.ProgressDialog;
 import java.io.File;
 import java.util.Objects;
 
+import ddlx.api.OpenAIService;
+
 public class MainActivity extends AppCompatActivity {
 
     public static final String TAG = "MainActivity";
@@ -78,6 +80,7 @@ public class MainActivity extends AppCompatActivity {
         });
         setSupportActionBar(toolbar);
         Objects.requireNonNull(getSupportActionBar()).setDisplayHomeAsUpEnabled(true);
+        OpenAIService.getInstance(this);
     }
 
     private Fragment getModelListFragment() {
